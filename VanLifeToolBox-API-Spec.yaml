@@ -1,0 +1,1482 @@
+openapi: 3.1.0
+info:
+  title: VanLifeToolBox API
+  description: |
+    RESTful API for VanLifeToolBox - a mobile-first web application for nomads, van lifers, RVers, and road travelers.
+
+    ## Overview
+    This API provides:
+    - **Weather Finder**: Search for locations matching specific weather criteria with scored results
+    - **Electrical Calculators**: Save and manage off-grid electrical system configurations
+    - **Resource Library**: Browse curated resources for the van life community
+
+    ## Authentication
+    Authentication is handled via **Supabase Auth**. Most read operations are public. Write operations (saving searches, configurations) require authentication.
+
+    **Client-side:** Use the Supabase Auth SDK for registration, login, and token management:
+    - `supabase.auth.signUp()` - Register new user
+    - `supabase.auth.signInWithPassword()` - Login
+    - `supabase.auth.signOut()` - Logout
+    - `supabase.auth.getUser()` - Get current user
+
+    **API requests:** Include the Supabase access token in the `Authorization` header as a Bearer token. The backend validates tokens against Supabase.
+
+    Tokens expire after 1 hour. The Supabase SDK handles refresh automatically.
+
+    ## Rate Limiting
+    All endpoints are rate limited to prevent abuse:
+    - **Public endpoints**: 100 requests/minute per IP
+    - **Authenticated endpoints**: 200 requests/minute per user
+    - **Save operations** (POST/PUT on /searches, /configs): 30 requests/hour per user
+
+    When rate limited, responses include `Retry-After` header indicating seconds until limit resets.
+
+    ## Scoring Algorithm
+    Weather search results are scored based on how well each location matches the user's criteria:
+    - Only filters explicitly set by the user are included in the calculation
+    - Each active filter is weighted equally
+    - Score = (sum of individual filter scores) / (number of active filters)
+    - Individual filter scores are 0-100 based on how close the location's value is to the desired range
+
+  version: 1.0.0
+  contact:
+    name: VanLifeToolBox Support
+    url: https://vanlifetoolbox.com/support
+  license:
+    name: Proprietary
+    url: https://vanlifetoolbox.com/terms
+
+servers:
+  - url: https://api.vanlifetoolbox.com/api
+    description: Production server
+  - url: https://staging-api.vanlifetoolbox.com/api
+    description: Staging server
+  - url: http://localhost:3000/api
+    description: Local development
+
+tags:
+  - name: User
+    description: Get current authenticated user info (auth handled by Supabase client-side)
+  - name: Weather
+    description: Weather-based location search and data retrieval
+  - name: Saved Searches
+    description: Manage saved weather search configurations
+  - name: Electrical Configs
+    description: Manage saved electrical system configurations
+  - name: Resources
+    description: Browse curated van life resources
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Supabase JWT access token obtained via Supabase Auth SDK
+
+  schemas:
+    # ==================== Common ====================
+    SuccessResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+      required:
+        - success
+
+    ErrorResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: false
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              enum:
+                - VALIDATION_ERROR
+                - AUTHENTICATION_REQUIRED
+                - INVALID_CREDENTIALS
+                - TOKEN_EXPIRED
+                - RESOURCE_NOT_FOUND
+                - DUPLICATE_RESOURCE
+                - RATE_LIMITED
+                - DATE_RANGE_TOO_LARGE
+                - DATE_RANGE_WARNING
+                - WEATHER_API_ERROR
+                - INTERNAL_ERROR
+              example: VALIDATION_ERROR
+            message:
+              type: string
+              example: Invalid email format
+            details:
+              type: array
+              items:
+                type: object
+                properties:
+                  field:
+                    type: string
+                  message:
+                    type: string
+          required:
+            - code
+            - message
+      required:
+        - success
+        - error
+
+    # ==================== Auth ====================
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        createdAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - email
+        - createdAt
+
+    # ==================== Weather ====================
+    PrecipitationType:
+      type: string
+      enum:
+        - none
+        - rain
+        - snow
+        - sleet
+        - freezing_rain
+        - hail
+        - drizzle
+        - thunderstorms
+        - ice_pellets
+        - fog
+        - mist
+        - mixed
+      description: |
+        Precipitation types as tracked by the National Weather Service:
+        - `none`: No precipitation
+        - `rain`: Liquid precipitation
+        - `snow`: Frozen precipitation (snowflakes)
+        - `sleet`: Ice pellets formed from frozen raindrops
+        - `freezing_rain`: Rain that freezes on contact with surfaces
+        - `hail`: Large ice pellets from thunderstorms
+        - `drizzle`: Light, fine rain
+        - `thunderstorms`: Rain with thunder/lightning
+        - `ice_pellets`: Small, translucent ice particles
+        - `fog`: Low visibility due to water droplets in air
+        - `mist`: Light fog with better visibility
+        - `mixed`: Multiple precipitation types
+
+    WeatherFilters:
+      type: object
+      description: |
+        Weather criteria for location search. All filters are optional.
+        Only filters explicitly provided are used in score calculation.
+      properties:
+        tempMin:
+          type: number
+          minimum: -50
+          maximum: 150
+          description: Minimum temperature in °F
+          example: 65
+        tempMax:
+          type: number
+          minimum: -50
+          maximum: 150
+          description: Maximum temperature in °F
+          example: 80
+        humidityMax:
+          type: number
+          minimum: 0
+          maximum: 100
+          description: Maximum humidity percentage
+          example: 50
+        windSpeedMax:
+          type: number
+          minimum: 0
+          maximum: 200
+          description: Maximum wind speed in mph
+          example: 15
+        precipChanceMax:
+          type: number
+          minimum: 0
+          maximum: 100
+          description: Maximum precipitation chance percentage
+          example: 20
+        precipTypesAllowed:
+          type: array
+          items:
+            $ref: '#/components/schemas/PrecipitationType'
+          description: List of acceptable precipitation types. If not specified, all types are acceptable.
+          example: ["none", "drizzle"]
+        precipTypesExcluded:
+          type: array
+          items:
+            $ref: '#/components/schemas/PrecipitationType'
+          description: List of precipitation types to exclude from results
+          example: ["snow", "hail", "freezing_rain"]
+        aqiMax:
+          type: number
+          minimum: 1
+          maximum: 500
+          description: Maximum Air Quality Index value
+          example: 50
+
+    DateRange:
+      type: object
+      properties:
+        startDate:
+          type: string
+          format: date
+          description: Start date (ISO 8601)
+          example: "2025-03-01"
+        endDate:
+          type: string
+          format: date
+          description: End date (ISO 8601)
+          example: "2025-03-31"
+      required:
+        - startDate
+        - endDate
+
+    GridPoint:
+      type: object
+      description: |
+        A pre-computed grid point for weather data. Grid points are spaced approximately
+        0.25° apart (~17 miles), providing dense coverage across the continental USA.
+        When users select a location on the map, it snaps to the nearest grid point.
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Unique identifier for this grid point
+        latitude:
+          type: number
+          format: double
+          minimum: 24.0
+          maximum: 50.0
+          description: Latitude in decimal degrees
+          example: 32.2226
+        longitude:
+          type: number
+          format: double
+          minimum: -125.0
+          maximum: -66.0
+          description: Longitude in decimal degrees
+          example: -110.9747
+        nearestCity:
+          type: string
+          description: Name of nearest city/town for display purposes
+          example: "Tucson"
+        state:
+          type: string
+          minLength: 2
+          maxLength: 2
+          description: Two-letter state code
+          example: "AZ"
+        region:
+          type: string
+          description: Geographic region for filtering
+          enum:
+            - northeast
+            - southeast
+            - midwest
+            - southwest
+            - west
+            - pacific_northwest
+          example: "southwest"
+      required:
+        - id
+        - latitude
+        - longitude
+        - state
+
+    WeatherSearchResult:
+      type: object
+      properties:
+        gridPoint:
+          $ref: '#/components/schemas/GridPoint'
+        score:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: |
+            Overall match score (0-100). Calculated as the average of individual
+            filter scores, considering only filters the user explicitly set.
+          example: 92
+        dataType:
+          type: string
+          enum: [forecast, historical, mixed]
+          description: |
+            Source of weather data:
+            - `forecast`: NWS forecast data (typically 7-14 days out)
+            - `historical`: Historical average data
+            - `mixed`: Combination of forecast and historical for longer date ranges
+        breakdown:
+          type: object
+          description: Individual scores for each filter criterion
+          properties:
+            temperature:
+              $ref: '#/components/schemas/FilterScore'
+            humidity:
+              $ref: '#/components/schemas/FilterScore'
+            wind:
+              $ref: '#/components/schemas/FilterScore'
+            precipitation:
+              $ref: '#/components/schemas/FilterScore'
+            aqi:
+              $ref: '#/components/schemas/FilterScore'
+      required:
+        - gridPoint
+        - score
+        - dataType
+        - breakdown
+
+    FilterScore:
+      type: object
+      properties:
+        score:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: Score for this specific filter (0-100)
+        value:
+          type: number
+          description: Actual average value for this metric
+        unit:
+          type: string
+          description: Unit of measurement
+      required:
+        - score
+        - value
+
+    DailyWeather:
+      type: object
+      properties:
+        date:
+          type: string
+          format: date
+        dataType:
+          type: string
+          enum: [forecast, historical]
+          description: Whether this day's data is from forecast or historical averages
+        tempHigh:
+          type: number
+          description: High temperature in °F
+        tempLow:
+          type: number
+          description: Low temperature in °F
+        humidity:
+          type: number
+          description: Average humidity percentage
+        windSpeed:
+          type: number
+          description: Average wind speed in mph
+        windDirection:
+          type: string
+          enum: [N, NE, E, SE, S, SW, W, NW]
+          description: Predominant wind direction
+        precipChance:
+          type: number
+          description: Precipitation chance percentage
+        precipType:
+          $ref: '#/components/schemas/PrecipitationType'
+        aqi:
+          type: integer
+          minimum: 1
+          maximum: 500
+          description: Air Quality Index value
+        aqiCategory:
+          type: string
+          enum:
+            - Good
+            - Moderate
+            - Unhealthy for Sensitive Groups
+            - Unhealthy
+            - Very Unhealthy
+            - Hazardous
+          description: EPA AQI category
+      required:
+        - date
+        - dataType
+        - tempHigh
+        - tempLow
+        - humidity
+        - windSpeed
+        - precipChance
+        - precipType
+        - aqi
+        - aqiCategory
+
+    # ==================== Saved Searches ====================
+    SavedSearch:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        title:
+          type: string
+          maxLength: 100
+          description: User-defined title for the search
+          example: "Spring 2025 Southwest Trip"
+        filters:
+          $ref: '#/components/schemas/WeatherFilters'
+        dateRange:
+          $ref: '#/components/schemas/DateRange'
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - title
+        - filters
+        - dateRange
+        - createdAt
+
+    # ==================== Electrical Configs ====================
+    Device:
+      type: object
+      properties:
+        name:
+          type: string
+          maxLength: 50
+          description: Device name
+          example: "Fridge"
+        watts:
+          type: number
+          minimum: 0
+          maximum: 10000
+          description: Power consumption in watts
+          example: 50
+        hoursPerDay:
+          type: number
+          minimum: 0
+          maximum: 24
+          description: Average hours of use per day
+          example: 24
+      required:
+        - name
+        - watts
+        - hoursPerDay
+
+    BatteryConfig:
+      type: object
+      properties:
+        type:
+          type: string
+          enum: [lead-acid, agm, lithium]
+          description: Battery chemistry type
+        capacity:
+          type: number
+          minimum: 1
+          maximum: 1000
+          description: Capacity in amp-hours (Ah)
+          example: 200
+        voltage:
+          type: integer
+          enum: [12, 24, 48]
+          description: System voltage
+          example: 12
+        quantity:
+          type: integer
+          minimum: 1
+          maximum: 20
+          description: Number of batteries
+          example: 2
+      required:
+        - type
+        - capacity
+        - voltage
+        - quantity
+
+    SolarConfig:
+      type: object
+      properties:
+        panelWatts:
+          type: number
+          minimum: 1
+          maximum: 1000
+          description: Wattage per panel
+          example: 200
+        quantity:
+          type: integer
+          minimum: 1
+          maximum: 50
+          description: Number of panels
+          example: 2
+      required:
+        - panelWatts
+        - quantity
+
+    InverterConfig:
+      type: object
+      properties:
+        watts:
+          type: number
+          minimum: 100
+          maximum: 10000
+          description: Inverter wattage capacity
+          example: 2000
+        type:
+          type: string
+          enum: [modified-sine, pure-sine]
+          description: Inverter wave type
+          example: "pure-sine"
+      required:
+        - watts
+        - type
+
+    ElectricalConfigData:
+      type: object
+      properties:
+        devices:
+          type: array
+          items:
+            $ref: '#/components/schemas/Device'
+          description: List of electrical devices
+        batteries:
+          $ref: '#/components/schemas/BatteryConfig'
+        solar:
+          $ref: '#/components/schemas/SolarConfig'
+        inverter:
+          $ref: '#/components/schemas/InverterConfig'
+
+    ElectricalConfig:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        title:
+          type: string
+          maxLength: 100
+          description: User-defined title for the configuration
+          example: "Current Van Setup"
+        configData:
+          $ref: '#/components/schemas/ElectricalConfigData'
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required:
+        - id
+        - title
+        - configData
+        - createdAt
+
+    # ==================== Resources ====================
+    ResourceCategory:
+      type: string
+      enum:
+        - youtube
+        - facebook
+        - reddit
+        - forum
+        - repair
+        - gear
+        - apps
+        - other
+      description: Category of the resource
+
+    Resource:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        title:
+          type: string
+          maxLength: 200
+          example: "Will Prowse Solar Reviews"
+        url:
+          type: string
+          format: uri
+          example: "https://youtube.com/@WillProwse"
+        category:
+          $ref: '#/components/schemas/ResourceCategory'
+        description:
+          type: string
+          maxLength: 500
+          example: "In-depth solar and electrical reviews for van and RV systems"
+      required:
+        - id
+        - title
+        - url
+        - category
+
+    Pagination:
+      type: object
+      properties:
+        page:
+          type: integer
+          minimum: 1
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 100
+        total:
+          type: integer
+          minimum: 0
+        totalPages:
+          type: integer
+          minimum: 0
+      required:
+        - page
+        - limit
+        - total
+        - totalPages
+
+  responses:
+    UnauthorizedError:
+      description: Missing or invalid authentication token
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            error:
+              code: AUTHENTICATION_REQUIRED
+              message: Valid authentication token required
+
+    RateLimitError:
+      description: Rate limit exceeded
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+          description: Seconds until rate limit resets
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            error:
+              code: RATE_LIMITED
+              message: Too many requests. Please try again later.
+
+    NotFoundError:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            success: false
+            error:
+              code: RESOURCE_NOT_FOUND
+              message: The requested resource was not found
+
+paths:
+  # ==================== User ====================
+  # Note: Authentication (register, login, logout, refresh) is handled client-side
+  # via Supabase Auth SDK. See the Authentication section in the API description.
+
+  /user/me:
+    get:
+      tags: [User]
+      summary: Get current user
+      description: |
+        Returns the currently authenticated user's information from the database.
+        This endpoint validates the Supabase JWT and returns the user record.
+      operationId: getCurrentUser
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: User information retrieved
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/User'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+
+  # ==================== Weather ====================
+  /weather/search:
+    post:
+      tags: [Weather]
+      summary: Search locations by weather criteria
+      description: |
+        Searches for grid points matching the specified weather criteria and returns scored results.
+
+        **Date Range Limits:**
+        - Ranges up to 30 days: Processed normally
+        - Ranges 31-90 days: Processed with a warning in response
+        - Ranges over 90 days: Rejected with DATE_RANGE_TOO_LARGE error
+
+        **Scoring:**
+        - Only filters you explicitly provide are used in scoring
+        - Each filter is weighted equally
+        - Results are sorted by score descending
+      operationId: searchWeather
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                filters:
+                  $ref: '#/components/schemas/WeatherFilters'
+                dateRange:
+                  $ref: '#/components/schemas/DateRange'
+                options:
+                  type: object
+                  properties:
+                    limit:
+                      type: integer
+                      minimum: 1
+                      maximum: 500
+                      default: 50
+                      description: Maximum number of results to return
+                    minScore:
+                      type: integer
+                      minimum: 0
+                      maximum: 100
+                      default: 0
+                      description: Minimum match score to include in results
+                    region:
+                      type: string
+                      enum: [northeast, southeast, midwest, southwest, west, pacific_northwest]
+                      description: Limit search to a specific region
+                    states:
+                      type: array
+                      items:
+                        type: string
+                        minLength: 2
+                        maxLength: 2
+                      description: Limit search to specific states (2-letter codes)
+              required:
+                - filters
+                - dateRange
+      responses:
+        '200':
+          description: Search completed successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          results:
+                            type: array
+                            items:
+                              $ref: '#/components/schemas/WeatherSearchResult'
+                          meta:
+                            type: object
+                            properties:
+                              totalGridPoints:
+                                type: integer
+                                description: Total grid points searched
+                              matchingPoints:
+                                type: integer
+                                description: Grid points meeting minimum score
+                              dataSource:
+                                type: string
+                                enum: [forecast, historical, mixed]
+                              forecastDays:
+                                type: integer
+                                description: Days covered by forecast data
+                              historicalDays:
+                                type: integer
+                                description: Days covered by historical data
+                              warning:
+                                type: string
+                                description: Warning message for long date ranges (31-90 days)
+        '400':
+          description: Invalid request parameters or date range too large
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                dateRangeTooLarge:
+                  summary: Date range exceeds maximum
+                  value:
+                    success: false
+                    error:
+                      code: DATE_RANGE_TOO_LARGE
+                      message: "Date range exceeds maximum of 90 days. Please select a shorter range."
+                validationError:
+                  summary: Invalid filter values
+                  value:
+                    success: false
+                    error:
+                      code: VALIDATION_ERROR
+                      message: "Invalid filter parameters"
+                      details:
+                        - field: "filters.tempMin"
+                          message: "Must be between -50 and 150"
+        '429':
+          $ref: '#/components/responses/RateLimitError'
+
+  /weather/grid-points:
+    get:
+      tags: [Weather]
+      summary: Get all grid points
+      description: |
+        Returns all searchable grid points for map display. Used to populate the
+        map with location markers before a search is performed.
+
+        Grid points are spaced approximately 0.25° apart (~17 miles) for dense
+        coverage across the continental USA.
+      operationId: getGridPoints
+      parameters:
+        - name: region
+          in: query
+          schema:
+            type: string
+            enum: [northeast, southeast, midwest, southwest, west, pacific_northwest]
+          description: Filter by geographic region
+        - name: states
+          in: query
+          schema:
+            type: array
+            items:
+              type: string
+          style: form
+          explode: false
+          description: Filter by states (comma-separated 2-letter codes)
+        - name: bounds
+          in: query
+          schema:
+            type: string
+          description: |
+            Bounding box as "minLat,minLon,maxLat,maxLon" to get grid points
+            within a map viewport. Example: "32.0,-115.0,37.0,-109.0"
+      responses:
+        '200':
+          description: Grid points retrieved successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          gridPoints:
+                            type: array
+                            items:
+                              $ref: '#/components/schemas/GridPoint'
+                          total:
+                            type: integer
+        '429':
+          $ref: '#/components/responses/RateLimitError'
+
+  /weather/grid-points/{id}:
+    get:
+      tags: [Weather]
+      summary: Get weather detail for a grid point
+      description: Returns detailed weather data for a specific grid point and date range.
+      operationId: getGridPointWeather
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Grid point ID
+        - name: startDate
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+          description: Start date (ISO 8601)
+        - name: endDate
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+          description: End date (ISO 8601)
+      responses:
+        '200':
+          description: Weather data retrieved successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          gridPoint:
+                            $ref: '#/components/schemas/GridPoint'
+                          dailyData:
+                            type: array
+                            items:
+                              $ref: '#/components/schemas/DailyWeather'
+                          summary:
+                            type: object
+                            properties:
+                              avgTempHigh:
+                                type: number
+                              avgTempLow:
+                                type: number
+                              avgHumidity:
+                                type: number
+                              avgWindSpeed:
+                                type: number
+                              avgPrecipChance:
+                                type: number
+                              avgAqi:
+                                type: number
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '429':
+          $ref: '#/components/responses/RateLimitError'
+
+  /weather/nearest:
+    get:
+      tags: [Weather]
+      summary: Find nearest grid point
+      description: |
+        Given arbitrary coordinates, returns the nearest grid point.
+        Useful for snapping user-selected map locations to the grid.
+      operationId: findNearestGridPoint
+      parameters:
+        - name: lat
+          in: query
+          required: true
+          schema:
+            type: number
+            format: double
+            minimum: 24.0
+            maximum: 50.0
+          description: Latitude in decimal degrees
+        - name: lon
+          in: query
+          required: true
+          schema:
+            type: number
+            format: double
+            minimum: -125.0
+            maximum: -66.0
+          description: Longitude in decimal degrees
+      responses:
+        '200':
+          description: Nearest grid point found
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          gridPoint:
+                            $ref: '#/components/schemas/GridPoint'
+                          distance:
+                            type: number
+                            description: Distance from requested coordinates in miles
+        '400':
+          description: Coordinates outside USA coverage area
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # ==================== Saved Searches ====================
+  /searches:
+    get:
+      tags: [Saved Searches]
+      summary: Get all saved searches
+      description: Returns all saved searches for the authenticated user.
+      operationId: getSavedSearches
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Searches retrieved successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          searches:
+                            type: array
+                            items:
+                              $ref: '#/components/schemas/SavedSearch'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+
+    post:
+      tags: [Saved Searches]
+      summary: Create a saved search
+      description: |
+        Saves a new weather search configuration.
+
+        **Rate Limit:** 30 requests/hour per user for save operations.
+      operationId: createSavedSearch
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+                  maxLength: 100
+                  example: "Spring 2025 Southwest Trip"
+                filters:
+                  $ref: '#/components/schemas/WeatherFilters'
+                dateRange:
+                  $ref: '#/components/schemas/DateRange'
+              required:
+                - title
+                - filters
+                - dateRange
+      responses:
+        '201':
+          description: Search saved successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/SavedSearch'
+        '400':
+          description: Invalid request body
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '429':
+          $ref: '#/components/responses/RateLimitError'
+
+  /searches/{id}:
+    get:
+      tags: [Saved Searches]
+      summary: Get a saved search
+      description: Returns a specific saved search by ID.
+      operationId: getSavedSearch
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Search retrieved successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/SavedSearch'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+
+    put:
+      tags: [Saved Searches]
+      summary: Update a saved search
+      description: Updates an existing saved search. Users can only update their own searches.
+      operationId: updateSavedSearch
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+                  maxLength: 100
+                filters:
+                  $ref: '#/components/schemas/WeatherFilters'
+                dateRange:
+                  $ref: '#/components/schemas/DateRange'
+      responses:
+        '200':
+          description: Search updated successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/SavedSearch'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '429':
+          $ref: '#/components/responses/RateLimitError'
+
+    delete:
+      tags: [Saved Searches]
+      summary: Delete a saved search
+      description: Deletes a saved search. Users can only delete their own searches.
+      operationId: deleteSavedSearch
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Search deleted successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      message:
+                        type: string
+                        example: "Search deleted successfully"
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+
+  # ==================== Electrical Configurations ====================
+  /configs:
+    get:
+      tags: [Electrical Configs]
+      summary: Get all electrical configurations
+      description: Returns all saved electrical configurations for the authenticated user.
+      operationId: getElectricalConfigs
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Configurations retrieved successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          configs:
+                            type: array
+                            items:
+                              $ref: '#/components/schemas/ElectricalConfig'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+
+    post:
+      tags: [Electrical Configs]
+      summary: Create an electrical configuration
+      description: |
+        Creates a new electrical system configuration.
+
+        **Rate Limit:** 30 requests/hour per user for save operations.
+
+        There is no limit on the number of configurations a user can save.
+      operationId: createElectricalConfig
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+                  maxLength: 100
+                  example: "Dream Build"
+                configData:
+                  $ref: '#/components/schemas/ElectricalConfigData'
+              required:
+                - title
+                - configData
+      responses:
+        '201':
+          description: Configuration created successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ElectricalConfig'
+        '400':
+          description: Invalid request body
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '429':
+          $ref: '#/components/responses/RateLimitError'
+
+  /configs/{id}:
+    get:
+      tags: [Electrical Configs]
+      summary: Get an electrical configuration
+      description: Returns a specific electrical configuration by ID.
+      operationId: getElectricalConfig
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Configuration retrieved successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ElectricalConfig'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+
+    put:
+      tags: [Electrical Configs]
+      summary: Update an electrical configuration
+      description: Updates an existing electrical configuration. Users can only update their own configs.
+      operationId: updateElectricalConfig
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+                  maxLength: 100
+                configData:
+                  $ref: '#/components/schemas/ElectricalConfigData'
+      responses:
+        '200':
+          description: Configuration updated successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ElectricalConfig'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+        '429':
+          $ref: '#/components/responses/RateLimitError'
+
+    delete:
+      tags: [Electrical Configs]
+      summary: Delete an electrical configuration
+      description: Deletes an electrical configuration. Users can only delete their own configs.
+      operationId: deleteElectricalConfig
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Configuration deleted successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      message:
+                        type: string
+                        example: "Configuration deleted successfully"
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+
+  # ==================== Resources ====================
+  /resources:
+    get:
+      tags: [Resources]
+      summary: Get resources
+      description: |
+        Returns admin-curated resources, optionally filtered by category.
+
+        Resources are curated by admins only. Community submissions are not
+        available in MVP.
+      operationId: getResources
+      parameters:
+        - name: category
+          in: query
+          schema:
+            $ref: '#/components/schemas/ResourceCategory'
+          description: Filter by category
+        - name: search
+          in: query
+          schema:
+            type: string
+            maxLength: 100
+          description: Search in title and description
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+          description: Page number
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+          description: Results per page
+      responses:
+        '200':
+          description: Resources retrieved successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          resources:
+                            type: array
+                            items:
+                              $ref: '#/components/schemas/Resource'
+                          pagination:
+                            $ref: '#/components/schemas/Pagination'
+        '429':
+          $ref: '#/components/responses/RateLimitError'
+
+  /resources/{id}:
+    get:
+      tags: [Resources]
+      summary: Get a resource
+      description: Returns a specific resource by ID.
+      operationId: getResource
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Resource retrieved successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Resource'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
