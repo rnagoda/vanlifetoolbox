@@ -1,10 +1,11 @@
+import 'dotenv/config';
 import express, { type Express, type Request, type Response, type NextFunction } from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 
-// Import routes (to be created)
-// import userRoutes from './routes/user.routes.js';
+// Import routes
+import userRoutes from './routes/user.routes.js';
 // import weatherRoutes from './routes/weather.routes.js';
 // import searchesRoutes from './routes/searches.routes.js';
 // import configsRoutes from './routes/configs.routes.js';
@@ -55,8 +56,8 @@ app.get('/api/health', (_req: Request, res: Response) => {
   });
 });
 
-// Routes (uncomment as they are created)
-// app.use('/api/user', userRoutes);
+// Routes
+app.use('/api/user', userRoutes);
 // app.use('/api/weather', weatherRoutes);
 // app.use('/api/searches', searchesRoutes);
 // app.use('/api/configs', configsRoutes);
