@@ -1,6 +1,12 @@
 import { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+
+interface LocationState {
+  from?: {
+    pathname: string;
+  };
+}
 
 export default function Login() {
   const [email, setEmail] = useState('');
@@ -9,6 +15,10 @@ export default function Login() {
   const [loading, setLoading] = useState(false);
   const { signIn, isSupabaseConfigured } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
+
+  // Get the page they were trying to visit before being redirected to login
+  const from = (location.state as LocationState)?.from?.pathname || '/dashboard';
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -21,7 +31,8 @@ export default function Login() {
       setError(error.message);
       setLoading(false);
     } else {
-      navigate('/dashboard');
+      // Redirect to the page they were trying to visit, or dashboard
+      navigate(from, { replace: true });
     }
   };
 
@@ -61,7 +72,7 @@ export default function Login() {
               id="email"
               type="email"
               value={email}
-              onChange={(e) => setEmail(e.target.value)}
+              onChange={e => setEmail(e.target.value)}
               required
               className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-green-500"
               placeholder="you@example.com"
@@ -76,7 +87,7 @@ export default function Login() {
               id="password"
               type="password"
               value={password}
-              onChange={(e) => setPassword(e.target.value)}
+              onChange={e => setPassword(e.target.value)}
               required
               className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-green-500"
               placeholder="Enter your password"

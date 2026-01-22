@@ -1,6 +1,7 @@
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import { AuthProvider } from './context/AuthContext';
 import Layout from './components/layout/Layout';
+import ProtectedRoute from './components/auth/ProtectedRoute';
 import Home from './pages/Home';
 import WeatherFinder from './pages/WeatherFinder';
 import Calculators from './pages/Calculators';
@@ -20,7 +21,14 @@ function App() {
             <Route path="weather" element={<WeatherFinder />} />
             <Route path="calculators" element={<Calculators />} />
             <Route path="resources" element={<Resources />} />
-            <Route path="dashboard" element={<Dashboard />} />
+            <Route
+              path="dashboard"
+              element={
+                <ProtectedRoute>
+                  <Dashboard />
+                </ProtectedRoute>
+              }
+            />
             <Route path="login" element={<Login />} />
             <Route path="register" element={<Register />} />
             <Route path="*" element={<NotFound />} />
