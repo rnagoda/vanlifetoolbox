@@ -1,7 +1,14 @@
 import { Router, Request, Response } from 'express';
 import { PrismaClient, GridRegion } from '@prisma/client';
-import { gridPointsQuerySchema, nearestGridPointQuerySchema } from '../validators/index.js';
+import {
+  gridPointsQuerySchema,
+  nearestGridPointQuerySchema,
+  weatherSearchRequestSchema,
+} from '../validators/index.js';
 import { formatZodError, uuidSchema } from '../validators/common.js';
+import { weatherService } from '../services/weather.service.js';
+import { scoringService } from '../services/scoring.service.js';
+import type { ScoredLocation } from '../types/weather.js';
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -222,6 +229,147 @@ router.get('/nearest', async (req: Request, res: Response) => {
       error: {
         code: 'INTERNAL_ERROR',
         message: 'Failed to find nearest grid point',
+      },
+    });
+  }
+});
+
+/**
+ * POST /api/weather/search
+ * Searches for locations matching weather criteria.
+ * Returns scored results sorted by match quality.
+ */
+router.post('/search', async (req: Request, res: Response) => {
+  try {
+    // Validate request body
+    const parseResult = weatherSearchRequestSchema.safeParse(req.body);
+
+    if (!parseResult.success) {
+      res.status(400).json({
+        success: false,
+        error: formatZodError(parseResult.error),
+      });
+      return;
+    }
+
+    const { filters, dateRange, options } = parseResult.data;
+    const limit = options?.limit ?? 50;
+    const minScore = options?.minScore ?? 0;
+
+    // Build grid point query
+    const gridPointWhere: {
+      region?: GridRegion;
+      state?: { in: string[] };
+    } = {};
+
+    if (options?.region) {
+      gridPointWhere.region = options.region as GridRegion;
+    }
+
+    if (options?.states && options.states.length > 0) {
+      gridPointWhere.state = { in: options.states.map(s => s.toUpperCase()) };
+    }
+
+    // Fetch grid points (limit to reasonable batch for performance)
+    const gridPoints = await prisma.gridPoint.findMany({
+      where: gridPointWhere,
+      select: {
+        id: true,
+        latitude: true,
+        longitude: true,
+        nearestCity: true,
+        state: true,
+        region: true,
+      },
+      take: 500, // Process up to 500 grid points
+    });
+
+    if (gridPoints.length === 0) {
+      res.json({
+        success: true,
+        data: {
+          results: [],
+          total: 0,
+          searchCriteria: {
+            filters,
+            dateRange,
+            options,
+          },
+        },
+      });
+      return;
+    }
+
+    // Fetch weather data and score each location
+    const scoredLocations: ScoredLocation[] = [];
+
+    // Process in batches to avoid overwhelming the weather API
+    const batchSize = 10;
+    for (let i = 0; i < gridPoints.length; i += batchSize) {
+      const batch = gridPoints.slice(i, i + batchSize);
+
+      const batchResults = await Promise.all(
+        batch.map(async gridPoint => {
+          try {
+            const weather = await weatherService.getGridPointWeather(
+              gridPoint.id,
+              gridPoint.latitude,
+              gridPoint.longitude,
+              dateRange.startDate,
+              dateRange.endDate
+            );
+
+            return scoringService.scoreLocation(
+              gridPoint,
+              weather.daily,
+              filters,
+              weather.dataSource
+            );
+          } catch (error) {
+            console.error(`Error fetching weather for grid point ${gridPoint.id}:`, error);
+            return null;
+          }
+        })
+      );
+
+      // Add successful results
+      for (const result of batchResults) {
+        if (result && result.score >= minScore) {
+          scoredLocations.push(result);
+        }
+      }
+
+      // Stop early if we have enough high-scoring results
+      const highScoreResults = scoredLocations.filter(r => r.score >= 70);
+      if (highScoreResults.length >= limit * 2) {
+        break;
+      }
+    }
+
+    // Sort by score descending and limit results
+    const sortedResults = scoredLocations
+      .sort((a, b) => b.score - a.score)
+      .slice(0, limit);
+
+    res.json({
+      success: true,
+      data: {
+        results: sortedResults,
+        total: sortedResults.length,
+        searchCriteria: {
+          filters,
+          dateRange,
+          options,
+        },
+      },
+    });
+  } catch (error) {
+    console.error('Error in POST /api/weather/search:', error);
+    res.status(500).json({
+      success: false,
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: 'Failed to search weather data',
       },
     });
   }
