@@ -17,12 +17,16 @@
     "typecheck": "npm run typecheck --workspace=client && npm run typecheck --workspace=server",
     "lint": "npm run lint --workspace=client && npm run lint --workspace=server",
     "test": "npm run test --workspace=server",
+    "db:seed:grid": "tsx scripts/seed-grid-points.ts",
+    "db:push": "prisma db push --schema=prisma/schema.prisma",
+    "db:generate": "prisma generate --schema=prisma/schema.prisma",
     "prepare": "husky"
   },
   "devDependencies": {
     "husky": "^9.1.7",
     "lint-staged": "^15.5.2",
-    "prisma": "^6.19.2"
+    "prisma": "^6.19.2",
+    "tsx": "^4.21.0"
   },
   "lint-staged": {
     "client/src/**/*.{ts,tsx}": [

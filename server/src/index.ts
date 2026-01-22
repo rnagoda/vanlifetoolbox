@@ -6,7 +6,7 @@ import rateLimit from 'express-rate-limit';
 
 // Import routes
 import userRoutes from './routes/user.routes.js';
-// import weatherRoutes from './routes/weather.routes.js';
+import weatherRoutes from './routes/weather.routes.js';
 // import searchesRoutes from './routes/searches.routes.js';
 // import configsRoutes from './routes/configs.routes.js';
 // import resourcesRoutes from './routes/resources.routes.js';
@@ -58,7 +58,7 @@ app.get('/api/health', (_req: Request, res: Response) => {
 
 // Routes
 app.use('/api/user', userRoutes);
-// app.use('/api/weather', weatherRoutes);
+app.use('/api/weather', weatherRoutes);
 // app.use('/api/searches', searchesRoutes);
 // app.use('/api/configs', configsRoutes);
 // app.use('/api/resources', resourcesRoutes);
