@@ -11,40 +11,40 @@ This checklist tracks progress through MVP development. Update status as work pr
 ### 1.1 Repository & Tooling
 | Status | Task |
 |--------|------|
-| ⬜ | Initialize Git repo with .gitignore |
+| ✅ | Initialize Git repo with .gitignore |
 | ⬜ | Set up branch protection for `main` |
-| ⬜ | Create monorepo structure (client/, server/, prisma/, scripts/) |
-| ⬜ | Create .env.example files |
-| ⬜ | Configure ESLint + Prettier |
-| ⬜ | Configure TypeScript strict mode |
+| ✅ | Create monorepo structure (client/, server/, prisma/, scripts/) |
+| ✅ | Create .env.example files |
+| ✅ | Configure ESLint + Prettier |
+| ✅ | Configure TypeScript strict mode |
 | ⬜ | Set up Husky pre-commit hooks |
 
 ### 1.2 Frontend Foundation
 | Status | Task |
 |--------|------|
-| ⬜ | Initialize Vite + React 18 + TypeScript |
-| ⬜ | Install and configure Tailwind CSS |
+| ✅ | Initialize Vite + React 18 + TypeScript |
+| ✅ | Install and configure Tailwind CSS |
 | ⬜ | Set up React Router |
 | ⬜ | Create base layout components |
-| ⬜ | Set up Supabase client SDK |
+| ✅ | Set up Supabase client SDK (installed) |
 | ⬜ | Generate types from OpenAPI spec |
 | ⬜ | Create API client service |
 
 ### 1.3 Backend Foundation
 | Status | Task |
 |--------|------|
-| ⬜ | Initialize Express + TypeScript |
-| ⬜ | Set up Prisma with PostgreSQL + PostGIS |
+| ✅ | Initialize Express + TypeScript |
+| ✅ | Set up Prisma with PostgreSQL + PostGIS |
 | ⬜ | Configure Supabase JWT middleware |
-| ⬜ | Implement rate limiting middleware |
-| ⬜ | Set up Zod validation |
-| ⬜ | Create error handling middleware |
-| ⬜ | Configure CORS |
+| ✅ | Implement rate limiting middleware |
+| ✅ | Set up Zod validation (installed) |
+| ✅ | Create error handling middleware |
+| ✅ | Configure CORS |
 
 ### 1.4 Database
 | Status | Task |
 |--------|------|
-| ⬜ | Create Prisma schema |
+| ✅ | Create Prisma schema |
 | ⬜ | Run initial migration |
 | ⬜ | Create grid points seed script (~50K points) |
 | ⬜ | Populate nearest city for grid points |

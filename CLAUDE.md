@@ -765,6 +765,39 @@ All API errors return consistent format:
 
 ---
 
+## Work Session Documentation
+
+When pausing or completing a work session, always provide a summary that includes:
+
+### Testable Items
+List all new functionality that can be tested:
+- New endpoints (with example curl commands)
+- New UI components (with navigation paths)
+- New scripts or commands
+- Database changes
+
+### How to Test
+Provide step-by-step instructions for testing the work:
+
+```bash
+# Example format:
+
+# 1. Start the server
+cd server && npm run dev
+
+# 2. Test the health endpoint
+curl http://localhost:3001/api/health
+
+# 3. Start the client
+cd client && npm run dev
+
+# 4. Navigate to http://localhost:5173
+```
+
+Include expected outputs and success criteria for each test.
+
+---
+
 ## Companion Documents
 
 | Document | Format | Purpose |

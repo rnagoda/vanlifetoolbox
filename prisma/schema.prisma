@@ -1,0 +1,155 @@
+// VanLifeToolBox Database Schema
+// PostgreSQL with PostGIS extension for geospatial queries
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [postgis]
+}
+
+// ===========================================
+// User Model
+// Users are managed by Supabase Auth
+// This model syncs with Supabase auth.users table
+// ===========================================
+model User {
+  id                String              @id @default(uuid())
+  email             String              @unique
+  createdAt         DateTime            @default(now()) @map("created_at")
+  savedSearches     SavedSearch[]
+  electricalConfigs ElectricalConfig[]
+
+  @@map("users")
+}
+
+// ===========================================
+// Saved Weather Searches
+// Stores user's saved weather search configurations
+// ===========================================
+model SavedSearch {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title     String   @db.VarChar(100)
+  filters   Json     // WeatherFilters object
+  startDate DateTime @map("start_date") @db.Date
+  endDate   DateTime @map("end_date") @db.Date
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([userId])
+  @@map("saved_searches")
+}
+
+// ===========================================
+// Electrical Configurations
+// Stores user's saved electrical system configurations
+// ===========================================
+model ElectricalConfig {
+  id         String   @id @default(uuid())
+  userId     String   @map("user_id")
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title      String   @db.VarChar(100)
+  configData Json     @map("config_data") // ElectricalConfigData object
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  @@index([userId])
+  @@map("electrical_configs")
+}
+
+// ===========================================
+// Grid Points
+// Pre-computed weather grid (~50K points at 0.25° spacing)
+// Covers continental USA for dense rural/remote coverage
+// ===========================================
+model GridPoint {
+  id           String         @id @default(uuid())
+  latitude     Float
+  longitude    Float
+  nearestCity  String?        @map("nearest_city") @db.VarChar(100)
+  state        String         @db.Char(2)
+  region       GridRegion
+  weatherCache WeatherCache[]
+
+  @@unique([latitude, longitude])
+  @@index([state])
+  @@index([region])
+  @@map("grid_points")
+}
+
+// Enum for US regions
+enum GridRegion {
+  northeast
+  southeast
+  midwest
+  southwest
+  west
+  pacific_northwest
+
+  @@map("grid_region")
+}
+
+// ===========================================
+// Weather Cache
+// Cached weather data for grid points
+// Forecast: 6 hour cache, Historical: 7 day cache
+// ===========================================
+model WeatherCache {
+  id          String          @id @default(uuid())
+  gridPointId String          @map("grid_point_id")
+  gridPoint   GridPoint       @relation(fields: [gridPointId], references: [id], onDelete: Cascade)
+  date        DateTime        @db.Date
+  dataType    WeatherDataType @map("data_type")
+  data        Json            // DailyWeather object
+  fetchedAt   DateTime        @default(now()) @map("fetched_at")
+
+  @@unique([gridPointId, date, dataType])
+  @@index([gridPointId, date])
+  @@index([fetchedAt])
+  @@map("weather_cache")
+}
+
+// Enum for weather data source type
+enum WeatherDataType {
+  forecast
+  historical
+
+  @@map("weather_data_type")
+}
+
+// ===========================================
+// Resources
+// Admin-curated resource library
+// No community submissions for MVP
+// ===========================================
+model Resource {
+  id          String           @id @default(uuid())
+  title       String           @db.VarChar(200)
+  url         String           @db.VarChar(500)
+  category    ResourceCategory
+  description String?          @db.VarChar(500)
+  createdAt   DateTime         @default(now()) @map("created_at")
+
+  @@index([category])
+  @@map("resources")
+}
+
+// Enum for resource categories
+enum ResourceCategory {
+  youtube
+  facebook
+  reddit
+  forum
+  repair
+  gear
+  apps
+  other
+
+  @@map("resource_category")
+}
