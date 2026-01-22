@@ -762,6 +762,45 @@ All API errors return consistent format:
 - [ ] Feature branch is up to date with main
 - [ ] Commit messages follow conventional format
 - [ ] PR description explains changes clearly
+- [ ] **TEST STEPS PROVIDED TO USER** (see below)
+
+---
+
+## MANDATORY: Test Steps Before PR (CRITICAL)
+
+**BEFORE creating any PR, you MUST provide the user with manual test steps to verify the work.**
+
+This is NON-NEGOTIABLE. Every PR must be preceded by:
+
+1. **Prerequisites** - What needs to be running (server, client, database)
+2. **Test Commands** - Exact curl commands or UI steps to test each feature
+3. **Expected Results** - What the user should see for each test
+4. **Error Case Tests** - How to verify error handling works
+
+### Example Format:
+
+```markdown
+## Test Steps
+
+**Prerequisites:**
+\`\`\`bash
+npm run dev:server
+\`\`\`
+
+**Test 1: [Feature Name]**
+\`\`\`bash
+curl -s http://localhost:3001/api/endpoint | jq '.'
+\`\`\`
+Expected: { "success": true, "data": { ... } }
+
+**Test 2: [Error Handling]**
+\`\`\`bash
+curl -s http://localhost:3001/api/endpoint/invalid | jq '.'
+\`\`\`
+Expected: { "success": false, "error": { "code": "VALIDATION_ERROR", ... } }
+```
+
+**DO NOT create a PR until the user has had the opportunity to run these tests and confirm the work is correct.**
 
 ---
 
