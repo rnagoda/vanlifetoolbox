@@ -202,8 +202,9 @@ export class OpenMeteoProvider implements WeatherProvider {
 
   /**
    * Number of years to average for historical fallback
+   * Reduced to 3 to minimize API calls while still getting reasonable averages
    */
-  private readonly historicalYearsToAverage = 5;
+  private readonly historicalYearsToAverage = 3;
 
   async getWeather(
     lat: number,
@@ -217,18 +218,14 @@ export class OpenMeteoProvider implements WeatherProvider {
     const end = new Date(endDate);
 
     // Determine which API(s) to call based on date range
+    // Forecast API supports today through maxForecastDays (16 days)
     const forecastEnd = new Date(today);
-    forecastEnd.setDate(forecastEnd.getDate() + this.maxForecastDays);
-
-    const needsHistorical = start < today;
-    const needsForecast = end >= today && start <= forecastEnd;
-    // Check if dates are beyond forecast range (need historical fallback)
-    const needsHistoricalFallback = end > forecastEnd;
+    forecastEnd.setDate(forecastEnd.getDate() + this.maxForecastDays - 1); // -1 because today counts
 
     const results: DailyWeather[] = [];
 
-    // Fetch historical data if needed (for past dates)
-    if (needsHistorical) {
+    // Case 1: Past dates (before today) - use historical API
+    if (start < today) {
       const histEnd = end < today ? end : new Date(today.getTime() - 86400000); // yesterday
       if (start <= histEnd) {
         try {
@@ -240,35 +237,42 @@ export class OpenMeteoProvider implements WeatherProvider {
       }
     }
 
-    // Fetch forecast data if needed
-    if (needsForecast) {
+    // Case 2: Dates within forecast window (today to forecastEnd) - use forecast API
+    if (end >= today && start <= forecastEnd) {
       const fcstStart = start >= today ? start : today;
       const fcstEnd = end <= forecastEnd ? end : forecastEnd;
-      try {
-        const forecast = await this.fetchForecast(lat, lon, this.formatDate(fcstStart), this.formatDate(fcstEnd));
-        results.push(...forecast);
-      } catch (error) {
-        console.error('Error fetching forecast data, falling back to historical averages:', error);
-        // Fallback: use historical averages from the same dates over multiple years
+
+      // Only call forecast if the range is valid
+      if (fcstStart <= fcstEnd) {
         try {
-          const averaged = await this.fetchHistoricalAverages(lat, lon, fcstStart, fcstEnd);
-          results.push(...averaged);
-        } catch (fallbackError) {
-          console.error('Historical averages fallback also failed:', fallbackError);
+          const forecast = await this.fetchForecast(lat, lon, this.formatDate(fcstStart), this.formatDate(fcstEnd));
+          results.push(...forecast);
+        } catch (error) {
+          console.error('Error fetching forecast data, falling back to historical averages:', error);
+          // Fallback: use historical averages from the same dates over multiple years
+          try {
+            const averaged = await this.fetchHistoricalAverages(lat, lon, fcstStart, fcstEnd);
+            results.push(...averaged);
+          } catch (fallbackError) {
+            console.error('Historical averages fallback also failed:', fallbackError);
+          }
         }
       }
     }
 
-    // For dates beyond forecast range, use historical averages
-    if (needsHistoricalFallback) {
-      const fallbackStart = new Date(Math.max(forecastEnd.getTime() + 86400000, start.getTime()));
+    // Case 3: Dates beyond forecast window - use historical averages
+    if (end > forecastEnd) {
+      // Start from either day after forecastEnd, or the original start date if it's already beyond
+      const fallbackStart = start > forecastEnd ? start : new Date(forecastEnd.getTime() + 86400000);
       const fallbackEnd = end;
 
-      try {
-        const averaged = await this.fetchHistoricalAverages(lat, lon, fallbackStart, fallbackEnd);
-        results.push(...averaged);
-      } catch (error) {
-        console.error('Error fetching historical averages:', error);
+      if (fallbackStart <= fallbackEnd) {
+        try {
+          const averaged = await this.fetchHistoricalAverages(lat, lon, fallbackStart, fallbackEnd);
+          results.push(...averaged);
+        } catch (error) {
+          console.error('Error fetching historical averages:', error);
+        }
       }
     }
 
