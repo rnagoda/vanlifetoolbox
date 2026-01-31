@@ -86,6 +86,106 @@ function mmToInches(mm: number): number {
 }
 
 /**
+ * Simple rate limiter to avoid 429 errors from Open-Meteo
+ */
+class RateLimiter {
+  private queue: Array<{ resolve: () => void; reject: (err: Error) => void }> = [];
+  private lastRequestTime = 0;
+  private activeRequests = 0;
+  private readonly minDelayMs: number;
+  private readonly maxConcurrent: number;
+
+  constructor(requestsPerSecond: number, maxConcurrent: number = 3) {
+    this.minDelayMs = Math.ceil(1000 / requestsPerSecond);
+    this.maxConcurrent = maxConcurrent;
+  }
+
+  async acquire(): Promise<void> {
+    return new Promise((resolve, reject) => {
+      this.queue.push({ resolve, reject });
+      this.processQueue();
+    });
+  }
+
+  release(): void {
+    this.activeRequests--;
+    this.processQueue();
+  }
+
+  private processQueue(): void {
+    if (this.queue.length === 0 || this.activeRequests >= this.maxConcurrent) {
+      return;
+    }
+
+    const now = Date.now();
+    const timeSinceLastRequest = now - this.lastRequestTime;
+    const delay = Math.max(0, this.minDelayMs - timeSinceLastRequest);
+
+    setTimeout(() => {
+      if (this.queue.length === 0 || this.activeRequests >= this.maxConcurrent) {
+        return;
+      }
+
+      const item = this.queue.shift();
+      if (item) {
+        this.lastRequestTime = Date.now();
+        this.activeRequests++;
+        item.resolve();
+      }
+
+      // Continue processing if there are more items
+      if (this.queue.length > 0) {
+        this.processQueue();
+      }
+    }, delay);
+  }
+}
+
+// Shared rate limiter for all Open-Meteo requests
+const rateLimiter = new RateLimiter(3, 2); // 3 requests/second, max 2 concurrent
+
+/**
+ * Fetch with retry logic for handling 429 errors
+ */
+async function fetchWithRetry(
+  url: string,
+  maxRetries: number = 3,
+  baseDelayMs: number = 1000
+): Promise<Response> {
+  let lastError: Error | null = null;
+
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    await rateLimiter.acquire();
+    try {
+      const response = await fetch(url);
+
+      if (response.status === 429) {
+        // Rate limited - wait with exponential backoff
+        const retryAfter = response.headers.get('Retry-After');
+        const delayMs = retryAfter
+          ? parseInt(retryAfter, 10) * 1000
+          : baseDelayMs * Math.pow(2, attempt);
+        console.warn(`Rate limited (429), waiting ${delayMs}ms before retry ${attempt + 1}/${maxRetries}`);
+        await new Promise(r => setTimeout(r, delayMs));
+        continue;
+      }
+
+      return response;
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+      // Network error - retry with backoff
+      const delayMs = baseDelayMs * Math.pow(2, attempt);
+      console.warn(`Network error, waiting ${delayMs}ms before retry ${attempt + 1}/${maxRetries}:`, lastError.message);
+      await new Promise(r => setTimeout(r, delayMs));
+    } finally {
+      rateLimiter.release();
+    }
+  }
+
+  throw lastError || new Error('Max retries exceeded');
+}
+
+/**
  * Open-Meteo weather provider
  * Free API with generous limits, supports forecast (16 days) and historical data
  */
@@ -100,6 +200,12 @@ export class OpenMeteoProvider implements WeatherProvider {
    */
   private readonly maxForecastDays = 16;
 
+  /**
+   * Number of years to average for historical fallback
+   * Reduced to 3 to minimize API calls while still getting reasonable averages
+   */
+  private readonly historicalYearsToAverage = 3;
+
   async getWeather(
     lat: number,
     lon: number,
@@ -112,29 +218,62 @@ export class OpenMeteoProvider implements WeatherProvider {
     const end = new Date(endDate);
 
     // Determine which API(s) to call based on date range
+    // Forecast API supports today through maxForecastDays (16 days)
     const forecastEnd = new Date(today);
-    forecastEnd.setDate(forecastEnd.getDate() + this.maxForecastDays);
-
-    const needsHistorical = start < today;
-    const needsForecast = end >= today && start <= forecastEnd;
+    forecastEnd.setDate(forecastEnd.getDate() + this.maxForecastDays - 1); // -1 because today counts
 
     const results: DailyWeather[] = [];
 
-    // Fetch historical data if needed
-    if (needsHistorical) {
+    // Case 1: Past dates (before today) - use historical API
+    if (start < today) {
       const histEnd = end < today ? end : new Date(today.getTime() - 86400000); // yesterday
       if (start <= histEnd) {
-        const historical = await this.fetchHistorical(lat, lon, startDate, this.formatDate(histEnd));
-        results.push(...historical);
+        try {
+          const historical = await this.fetchHistorical(lat, lon, startDate, this.formatDate(histEnd));
+          results.push(...historical);
+        } catch (error) {
+          console.error('Error fetching historical data:', error);
+        }
       }
     }
 
-    // Fetch forecast data if needed
-    if (needsForecast) {
+    // Case 2: Dates within forecast window (today to forecastEnd) - use forecast API
+    if (end >= today && start <= forecastEnd) {
       const fcstStart = start >= today ? start : today;
       const fcstEnd = end <= forecastEnd ? end : forecastEnd;
-      const forecast = await this.fetchForecast(lat, lon, this.formatDate(fcstStart), this.formatDate(fcstEnd));
-      results.push(...forecast);
+
+      // Only call forecast if the range is valid
+      if (fcstStart <= fcstEnd) {
+        try {
+          const forecast = await this.fetchForecast(lat, lon, this.formatDate(fcstStart), this.formatDate(fcstEnd));
+          results.push(...forecast);
+        } catch (error) {
+          console.error('Error fetching forecast data, falling back to historical averages:', error);
+          // Fallback: use historical averages from the same dates over multiple years
+          try {
+            const averaged = await this.fetchHistoricalAverages(lat, lon, fcstStart, fcstEnd);
+            results.push(...averaged);
+          } catch (fallbackError) {
+            console.error('Historical averages fallback also failed:', fallbackError);
+          }
+        }
+      }
+    }
+
+    // Case 3: Dates beyond forecast window - use historical averages
+    if (end > forecastEnd) {
+      // Start from either day after forecastEnd, or the original start date if it's already beyond
+      const fallbackStart = start > forecastEnd ? start : new Date(forecastEnd.getTime() + 86400000);
+      const fallbackEnd = end;
+
+      if (fallbackStart <= fallbackEnd) {
+        try {
+          const averaged = await this.fetchHistoricalAverages(lat, lon, fallbackStart, fallbackEnd);
+          results.push(...averaged);
+        } catch (error) {
+          console.error('Error fetching historical averages:', error);
+        }
+      }
     }
 
     // Sort by date and remove duplicates (prefer forecast for today)
@@ -150,21 +289,132 @@ export class OpenMeteoProvider implements WeatherProvider {
     );
   }
 
-  supportsDateRange(startDate: string, endDate: string): boolean {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const start = new Date(startDate);
-    const end = new Date(endDate);
+  /**
+   * Fetch historical data for multiple years and compute averages
+   * This provides a more reliable estimate than a single year's data
+   */
+  private async fetchHistoricalAverages(
+    lat: number,
+    lon: number,
+    startDate: Date,
+    endDate: Date
+  ): Promise<DailyWeather[]> {
+    const targetYear = startDate.getFullYear();
+    const yearsData: DailyWeather[][] = [];
 
-    // Check forecast limit (16 days ahead)
-    const maxForecastDate = new Date(today);
-    maxForecastDate.setDate(maxForecastDate.getDate() + this.maxForecastDays);
+    // Fetch data for the past N years
+    for (let yearOffset = 1; yearOffset <= this.historicalYearsToAverage; yearOffset++) {
+      const histStart = new Date(startDate);
+      histStart.setFullYear(targetYear - yearOffset);
+      const histEnd = new Date(endDate);
+      histEnd.setFullYear(targetYear - yearOffset);
 
-    // We support if either:
-    // 1. Dates are in the past (historical)
-    // 2. Dates are within forecast range
-    // 3. Mix of both
-    return start <= maxForecastDate || end < today;
+      try {
+        const data = await this.fetchHistorical(lat, lon, this.formatDate(histStart), this.formatDate(histEnd));
+        yearsData.push(data);
+      } catch (error) {
+        console.error(`Error fetching historical data for year ${targetYear - yearOffset}:`, error);
+        // Continue with other years even if one fails
+      }
+    }
+
+    if (yearsData.length === 0) {
+      throw new Error('Failed to fetch any historical data for averaging');
+    }
+
+    // Average the data across years
+    return this.averageHistoricalData(yearsData, startDate, endDate);
+  }
+
+  /**
+   * Average weather data across multiple years
+   */
+  private averageHistoricalData(
+    yearsData: DailyWeather[][],
+    startDate: Date,
+    endDate: Date
+  ): DailyWeather[] {
+    const results: DailyWeather[] = [];
+
+    // Get the number of days in the range
+    const numDays = Math.ceil((endDate.getTime() - startDate.getTime()) / 86400000) + 1;
+
+    for (let dayIndex = 0; dayIndex < numDays; dayIndex++) {
+      const targetDate = new Date(startDate);
+      targetDate.setDate(targetDate.getDate() + dayIndex);
+      const targetDateStr = this.formatDate(targetDate);
+
+      // Collect data for this day from all years
+      const dayDataPoints: DailyWeather[] = [];
+      for (const yearData of yearsData) {
+        const matchingDay = yearData[dayIndex];
+        if (matchingDay) {
+          dayDataPoints.push(matchingDay);
+        }
+      }
+
+      if (dayDataPoints.length === 0) continue;
+
+      // Compute averages
+      const avgTempHigh = Math.round(
+        dayDataPoints.reduce((sum, d) => sum + d.tempHigh, 0) / dayDataPoints.length
+      );
+      const avgTempLow = Math.round(
+        dayDataPoints.reduce((sum, d) => sum + d.tempLow, 0) / dayDataPoints.length
+      );
+      const avgHumidity = Math.round(
+        dayDataPoints.reduce((sum, d) => sum + d.humidity, 0) / dayDataPoints.length
+      );
+      const avgWindSpeed = Math.round(
+        dayDataPoints.reduce((sum, d) => sum + d.windSpeed, 0) / dayDataPoints.length
+      );
+      const avgPrecipAmount =
+        Math.round(
+          (dayDataPoints.reduce((sum, d) => sum + d.precipAmount, 0) / dayDataPoints.length) * 100
+        ) / 100;
+
+      // For precipitation chance, calculate percentage of years with precipitation
+      const yearsWithPrecip = dayDataPoints.filter(d => d.precipAmount > 0).length;
+      const precipChance = Math.round((yearsWithPrecip / dayDataPoints.length) * 100);
+
+      // For precip type, use the most common type
+      const precipTypeCounts = new Map<string, number>();
+      for (const d of dayDataPoints) {
+        precipTypeCounts.set(d.precipType, (precipTypeCounts.get(d.precipType) || 0) + 1);
+      }
+      let mostCommonPrecipType = 'none' as DailyWeather['precipType'];
+      let maxCount = 0;
+      for (const [type, count] of precipTypeCounts) {
+        if (count > maxCount) {
+          maxCount = count;
+          mostCommonPrecipType = type as DailyWeather['precipType'];
+        }
+      }
+
+      results.push({
+        date: targetDateStr,
+        tempHigh: avgTempHigh,
+        tempLow: avgTempLow,
+        humidity: avgHumidity,
+        windSpeed: avgWindSpeed,
+        windGust: null, // Not reliable to average
+        precipChance,
+        precipType: mostCommonPrecipType,
+        precipAmount: avgPrecipAmount,
+        uvIndex: null, // Not available in historical data
+        cloudCover: null,
+        sunrise: dayDataPoints[0]?.sunrise ?? null,
+        sunset: dayDataPoints[0]?.sunset ?? null,
+      });
+    }
+
+    return results;
+  }
+
+  supportsDateRange(_startDate: string, _endDate: string): boolean {
+    // We now support all date ranges by falling back to historical data
+    // from the same dates in the previous year when forecast is unavailable
+    return true;
   }
 
   private async fetchForecast(
@@ -197,7 +447,7 @@ export class OpenMeteoProvider implements WeatherProvider {
       timezone: 'auto',
     });
 
-    const response = await fetch(`${this.forecastUrl}?${params}`);
+    const response = await fetchWithRetry(`${this.forecastUrl}?${params}`);
 
     if (!response.ok) {
       throw new Error(`Open-Meteo forecast API error: ${response.status} ${response.statusText}`);
@@ -235,7 +485,7 @@ export class OpenMeteoProvider implements WeatherProvider {
       timezone: 'auto',
     });
 
-    const response = await fetch(`${this.historicalUrl}?${params}`);
+    const response = await fetchWithRetry(`${this.historicalUrl}?${params}`);
 
     if (!response.ok) {
       throw new Error(`Open-Meteo historical API error: ${response.status} ${response.statusText}`);
