@@ -86,6 +86,106 @@ function mmToInches(mm: number): number {
 }
 
 /**
+ * Simple rate limiter to avoid 429 errors from Open-Meteo
+ */
+class RateLimiter {
+  private queue: Array<{ resolve: () => void; reject: (err: Error) => void }> = [];
+  private lastRequestTime = 0;
+  private activeRequests = 0;
+  private readonly minDelayMs: number;
+  private readonly maxConcurrent: number;
+
+  constructor(requestsPerSecond: number, maxConcurrent: number = 3) {
+    this.minDelayMs = Math.ceil(1000 / requestsPerSecond);
+    this.maxConcurrent = maxConcurrent;
+  }
+
+  async acquire(): Promise<void> {
+    return new Promise((resolve, reject) => {
+      this.queue.push({ resolve, reject });
+      this.processQueue();
+    });
+  }
+
+  release(): void {
+    this.activeRequests--;
+    this.processQueue();
+  }
+
+  private processQueue(): void {
+    if (this.queue.length === 0 || this.activeRequests >= this.maxConcurrent) {
+      return;
+    }
+
+    const now = Date.now();
+    const timeSinceLastRequest = now - this.lastRequestTime;
+    const delay = Math.max(0, this.minDelayMs - timeSinceLastRequest);
+
+    setTimeout(() => {
+      if (this.queue.length === 0 || this.activeRequests >= this.maxConcurrent) {
+        return;
+      }
+
+      const item = this.queue.shift();
+      if (item) {
+        this.lastRequestTime = Date.now();
+        this.activeRequests++;
+        item.resolve();
+      }
+
+      // Continue processing if there are more items
+      if (this.queue.length > 0) {
+        this.processQueue();
+      }
+    }, delay);
+  }
+}
+
+// Shared rate limiter for all Open-Meteo requests
+const rateLimiter = new RateLimiter(3, 2); // 3 requests/second, max 2 concurrent
+
+/**
+ * Fetch with retry logic for handling 429 errors
+ */
+async function fetchWithRetry(
+  url: string,
+  maxRetries: number = 3,
+  baseDelayMs: number = 1000
+): Promise<Response> {
+  let lastError: Error | null = null;
+
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    await rateLimiter.acquire();
+    try {
+      const response = await fetch(url);
+
+      if (response.status === 429) {
+        // Rate limited - wait with exponential backoff
+        const retryAfter = response.headers.get('Retry-After');
+        const delayMs = retryAfter
+          ? parseInt(retryAfter, 10) * 1000
+          : baseDelayMs * Math.pow(2, attempt);
+        console.warn(`Rate limited (429), waiting ${delayMs}ms before retry ${attempt + 1}/${maxRetries}`);
+        await new Promise(r => setTimeout(r, delayMs));
+        continue;
+      }
+
+      return response;
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+      // Network error - retry with backoff
+      const delayMs = baseDelayMs * Math.pow(2, attempt);
+      console.warn(`Network error, waiting ${delayMs}ms before retry ${attempt + 1}/${maxRetries}:`, lastError.message);
+      await new Promise(r => setTimeout(r, delayMs));
+    } finally {
+      rateLimiter.release();
+    }
+  }
+
+  throw lastError || new Error('Max retries exceeded');
+}
+
+/**
  * Open-Meteo weather provider
  * Free API with generous limits, supports forecast (16 days) and historical data
  */
@@ -343,7 +443,7 @@ export class OpenMeteoProvider implements WeatherProvider {
       timezone: 'auto',
     });
 
-    const response = await fetch(`${this.forecastUrl}?${params}`);
+    const response = await fetchWithRetry(`${this.forecastUrl}?${params}`);
 
     if (!response.ok) {
       throw new Error(`Open-Meteo forecast API error: ${response.status} ${response.statusText}`);
@@ -381,7 +481,7 @@ export class OpenMeteoProvider implements WeatherProvider {
       timezone: 'auto',
     });
 
-    const response = await fetch(`${this.historicalUrl}?${params}`);
+    const response = await fetchWithRetry(`${this.historicalUrl}?${params}`);
 
     if (!response.ok) {
       throw new Error(`Open-Meteo historical API error: ${response.status} ${response.statusText}`);
