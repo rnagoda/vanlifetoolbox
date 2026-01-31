@@ -95,10 +95,12 @@ const STATE_BOUNDS: Record<string, { minLat: number; maxLat: number; minLon: num
   KS: { minLat: 37.0, maxLat: 40.0, minLon: -102.1, maxLon: -94.6 },
 
   // Southwest
+  // Texas: Exclusion zones handle Gulf of Mexico, so we can use actual state boundaries
   TX: { minLat: 25.8, maxLat: 36.5, minLon: -106.6, maxLon: -93.5 },
   OK: { minLat: 33.6, maxLat: 37.0, minLon: -103.0, maxLon: -94.4 },
-  NM: { minLat: 31.3, maxLat: 37.0, minLon: -109.1, maxLon: -103.0 },
-  AZ: { minLat: 31.3, maxLat: 37.0, minLon: -114.8, maxLon: -109.0 },
+  // New Mexico and Arizona: Tightened southern boundaries (US border is ~31.33°N)
+  NM: { minLat: 31.4, maxLat: 37.0, minLon: -109.1, maxLon: -103.0 },
+  AZ: { minLat: 31.4, maxLat: 37.0, minLon: -114.8, maxLon: -109.0 },
 
   // West
   CO: { minLat: 37.0, maxLat: 41.0, minLon: -109.1, maxLon: -102.0 },
@@ -107,7 +109,8 @@ const STATE_BOUNDS: Record<string, { minLat: number; maxLat: number; minLon: num
   ID: { minLat: 42.0, maxLat: 49.0, minLon: -117.2, maxLon: -111.0 },
   UT: { minLat: 37.0, maxLat: 42.0, minLon: -114.1, maxLon: -109.0 },
   NV: { minLat: 35.0, maxLat: 42.0, minLon: -120.0, maxLon: -114.0 },
-  CA: { minLat: 32.5, maxLat: 42.0, minLon: -124.4, maxLon: -114.1 },
+  // California: Tightened southern boundary (US-Mexico border ~32.5°N at western end)
+  CA: { minLat: 32.6, maxLat: 42.0, minLon: -124.4, maxLon: -114.1 },
 
   // Pacific Northwest
   WA: { minLat: 45.5, maxLat: 49.0, minLon: -124.8, maxLon: -116.9 },
@@ -115,9 +118,57 @@ const STATE_BOUNDS: Record<string, { minLat: number; maxLat: number; minLon: num
 };
 
 /**
+ * Exclusion zones for water bodies and areas outside the US
+ * These are approximate bounding boxes for areas to exclude
+ */
+const EXCLUSION_ZONES: Array<{ minLat: number; maxLat: number; minLon: number; maxLon: number }> = [
+  // Gulf of Mexico (main body)
+  { minLat: 18.0, maxLat: 30.5, minLon: -98.0, maxLon: -81.0 },
+  // Gulf of Mexico - Texas coastal waters (more precise exclusion)
+  { minLat: 26.0, maxLat: 30.0, minLon: -97.5, maxLon: -93.5 },
+  // Atlantic Ocean off Florida
+  { minLat: 24.5, maxLat: 31.0, minLon: -81.5, maxLon: -75.0 },
+  // Atlantic Ocean off East Coast
+  { minLat: 31.0, maxLat: 45.0, minLon: -75.5, maxLon: -65.0 },
+  // Lake Michigan
+  { minLat: 41.6, maxLat: 46.1, minLon: -88.0, maxLon: -84.5 },
+  // Lake Superior
+  { minLat: 46.4, maxLat: 49.0, minLon: -92.2, maxLon: -84.3 },
+  // Lake Huron
+  { minLat: 43.0, maxLat: 46.3, minLon: -84.5, maxLon: -79.7 },
+  // Lake Erie
+  { minLat: 41.4, maxLat: 42.9, minLon: -83.5, maxLon: -78.8 },
+  // Lake Ontario
+  { minLat: 43.2, maxLat: 44.3, minLon: -79.9, maxLon: -76.0 },
+  // Pacific Ocean off California
+  { minLat: 32.5, maxLat: 42.0, minLon: -130.0, maxLon: -124.0 },
+  // Pacific Ocean off Oregon/Washington
+  { minLat: 42.0, maxLat: 49.0, minLon: -130.0, maxLon: -124.0 },
+  // Mexico (south of US border)
+  { minLat: 14.0, maxLat: 31.3, minLon: -118.0, maxLon: -86.0 },
+];
+
+/**
+ * Check if a point is in an exclusion zone (water body or outside US)
+ */
+function isInExclusionZone(lat: number, lon: number): boolean {
+  for (const zone of EXCLUSION_ZONES) {
+    if (lat >= zone.minLat && lat <= zone.maxLat && lon >= zone.minLon && lon <= zone.maxLon) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * Determine which state a point falls within (simplified)
  */
 function getStateForPoint(lat: number, lon: number): string | null {
+  // First check if in an exclusion zone
+  if (isInExclusionZone(lat, lon)) {
+    return null;
+  }
+
   for (const [state, bounds] of Object.entries(STATE_BOUNDS)) {
     if (lat >= bounds.minLat && lat <= bounds.maxLat && lon >= bounds.minLon && lon <= bounds.maxLon) {
       return state;
