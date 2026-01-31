@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import type { WeatherFilters, PrecipitationType } from '../../services/api';
+import RangeSlider from '../ui/RangeSlider';
 
 interface FilterPanelProps {
   filters: WeatherFilters;
@@ -79,30 +80,24 @@ export default function FilterPanel({
     <div className="space-y-6">
       {/* Temperature Range */}
       <div>
-        <label className="block text-sm font-medium text-gray-700 mb-2">
+        <label className="block text-sm font-medium text-gray-700 mb-3">
           Temperature Range (°F)
         </label>
-        <div className="flex items-center gap-2">
-          <input
-            type="number"
-            placeholder="Min"
-            value={filters.tempMin ?? ''}
-            onChange={e => updateFilter('tempMin', e.target.value ? Number(e.target.value) : undefined)}
-            className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:ring-blue-500 focus:border-blue-500"
-            min={-50}
-            max={150}
-          />
-          <span className="text-gray-500">to</span>
-          <input
-            type="number"
-            placeholder="Max"
-            value={filters.tempMax ?? ''}
-            onChange={e => updateFilter('tempMax', e.target.value ? Number(e.target.value) : undefined)}
-            className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:ring-blue-500 focus:border-blue-500"
-            min={-50}
-            max={150}
-          />
-        </div>
+        <RangeSlider
+          min={0}
+          max={120}
+          minValue={filters.tempMin ?? 50}
+          maxValue={filters.tempMax ?? 85}
+          onChange={(newMin, newMax) => {
+            onFiltersChange({
+              ...filters,
+              tempMin: newMin,
+              tempMax: newMax,
+            });
+          }}
+          step={5}
+          formatLabel={(v) => `${v}°F`}
+        />
       </div>
 
       {/* Humidity Max */}
